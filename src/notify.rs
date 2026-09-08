@@ -1,73 +1,97 @@
-use crate::headset_control::BatteryStatus;
+use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use win32_notif::{
+    notification::visual::{text::HintStyle, Text},
     NotificationBuilder, ToastsNotifier,
-    notification::visual::{Text, text::HintStyle},
 };
 #[cfg(windows)]
-use windows::{Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID, core::HSTRING};
+use windows::{
+    core::{Interface, HSTRING, PROPVARIANT},
+    Win32::{
+        Foundation::BOOL,
+        Storage::EnhancedStorage::PKEY_AppUserModel_ID,
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IPersistFile,
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        },
+        UI::Shell::{
+            FOLDERID_Programs, IShellLinkW, PropertiesSystem::IPropertyStore, SHGetKnownFolderPath,
+            SetCurrentProcessExplicitAppUserModelID, ShellLink,
+        },
+    },
+};
 
+use crate::native_devices::PowerState;
+
+#[derive(Clone, Copy, Debug, Default)]
+struct AlertState {
+    low_alerted: bool,
+}
+
+fn should_alert(
+    state: &mut AlertState,
+    percent: Option<u8>,
+    power: PowerState,
+    threshold: u8,
+) -> bool {
+    let threshold = threshold.min(100);
+    let eligible = threshold != 0
+        && matches!(power, PowerState::Discharging | PowerState::Unknown)
+        && percent.is_some_and(|level| level <= threshold);
+    // An offline timeout does not create a fresh alert episode on reconnect.
+    if threshold == 0
+        || matches!(power, PowerState::Charging | PowerState::Full)
+        || percent.is_some_and(|level| level > threshold)
+    {
+        state.low_alerted = false;
+        return false;
+    }
+    if eligible && !state.low_alerted {
+        state.low_alerted = true;
+        return true;
+    }
+    false
+}
+
+/// Alert history belongs to each physical device, so one battery cannot mute another.
 pub struct Notifier {
     toast_notifier: ToastsNotifier,
-    last_notification_state: Option<(isize, BatteryStatus)>,
+    alert_state: HashMap<String, AlertState>,
 }
 
 impl Notifier {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new() -> Result<Self> {
         let app_id = register_notifications_id().context("registering notifications id")?;
-        let toast_notifier = ToastsNotifier::new(Some(app_id))?;
         Ok(Self {
-            toast_notifier,
-            last_notification_state: None,
+            toast_notifier: ToastsNotifier::new(Some(app_id))?,
+            alert_state: HashMap::new(),
         })
     }
 
     pub fn update(
         &mut self,
-        current_level: isize,
-        current_status: BatteryStatus,
+        stable_id: &str,
         product_name: &str,
+        percent: Option<u8>,
+        power: PowerState,
+        threshold: u8,
     ) {
-        if let Some((last_level, last_status)) = self.last_notification_state {
-            let mut msg = None;
-
-            let battery_discharging = current_status == BatteryStatus::Available;
-            let battery_charging = current_status == BatteryStatus::Charging;
-
-            // Low battery (10%)
-            if current_level <= 10 && last_level > 10 && battery_discharging {
-                msg = Some(format!("Battery low ({}%)", current_level));
-            }
-            // Critical battery (3%)
-            else if current_level <= 3 && last_level > 3 && battery_discharging {
-                msg = Some(format!("Battery critical ({}%)", current_level));
-            }
-            // Charging started
-            else if battery_charging && last_status != BatteryStatus::Charging {
-                msg = Some(format!("Charging started ({}%)", current_level));
-            }
-            // Battery full (100%)
-            else if current_level == 100 && last_level < 100 && battery_charging {
-                msg = Some("Battery full".to_string());
-            }
-
-            if let Some(body) = msg
-                && let Err(err) = self.show_notification(product_name, &body)
+        let state = self.alert_state.entry(stable_id.to_owned()).or_default();
+        if should_alert(state, percent, power, threshold) {
+            let level = percent.expect("eligible alerts always have a percentage");
+            if let Err(error) =
+                self.show_notification(product_name, &format!("Battery low ({level}%)"))
             {
-                log::error!("Failed to show notification: {:?}", err);
+                log::error!("Failed to show notification: {error:?}");
             }
         }
-
-        self.last_notification_state = Some((current_level, current_status));
     }
 
     pub fn show_notification(&mut self, product_name: &str, body: &str) -> Result<()> {
-        let builder = NotificationBuilder::new()
+        NotificationBuilder::new()
             .visual(Text::create(0, product_name).with_style(HintStyle::Title))
-            .visual(Text::create(1, body).with_style(HintStyle::Body));
-
-        builder
+            .visual(Text::create(1, body).with_style(HintStyle::Body))
             .build(0, &self.toast_notifier, product_name, "battery")
             .context("building notification")?
             .show()
@@ -77,25 +101,166 @@ impl Notifier {
 
 #[cfg(windows)]
 pub fn register_notifications_id() -> Result<String> {
-    // Win32 Toast notifications typically require a Start Menu shortcut whose
-    // AppUserModelID matches the notifier ID. Without this, `show()` can succeed
-    // but nothing appears.
-
-    let app_id = if cfg!(debug_assertions) {
-        // In debug mode, use a common AUMID to avoid needing a Start Menu shortcut
-        "Microsoft.Windows.Explorer"
-    } else {
-        // In release mode, AUMID can be anything because the executable is already registered to some AUMID generated by inno setup
-        "HeadsetBatteryIndicator.App"
-    };
-
-    // Ensure the system associates this running EXE with the same AUMID.
+    // An unpackaged desktop process needs an All Programs shortcut with this
+    // exact AUMID before Windows will show its toast notifications.
+    let app_id = "BatteryStatus.App";
     unsafe {
-        use anyhow::Context;
-
         SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(app_id))
             .context("SetCurrentProcessExplicitAppUserModelID")?;
     }
+    install_start_menu_shortcut(app_id)
+        .context("registering Start menu shortcut for toast notifications")?;
+    Ok(app_id.to_owned())
+}
 
-    Ok(app_id.to_string())
+/// Creates or updates the per-user Start-menu shortcut required by the
+/// documented Windows desktop-toast contract. It always targets the currently
+/// running executable, so a moved portable copy remains registered correctly.
+#[cfg(windows)]
+fn install_start_menu_shortcut(app_id: &str) -> Result<()> {
+    let apartment_initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
+    let result = (|| -> Result<()> {
+        let programs =
+            unsafe { SHGetKnownFolderPath(&FOLDERID_Programs, Default::default(), None) }
+                .context("locating Start menu Programs folder")?;
+        let programs_text = unsafe { programs.to_string() };
+        unsafe { CoTaskMemFree(Some(programs.0.cast())) };
+        let programs = programs_text.context("reading Start menu Programs folder")?;
+        let shortcut_path = std::path::Path::new(&programs).join("Battery Status.lnk");
+        let executable = std::env::current_exe().context("locating running executable")?;
+        let executable = HSTRING::from(executable.to_string_lossy().as_ref());
+        let shortcut = HSTRING::from(shortcut_path.to_string_lossy().as_ref());
+
+        unsafe {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+                .context("creating Start menu shortcut")?;
+            link.SetPath(&executable)
+                .context("setting shortcut target")?;
+            link.SetDescription(&HSTRING::from("Battery Status"))
+                .context("setting shortcut description")?;
+
+            let store: IPropertyStore = link.cast().context("opening shortcut properties")?;
+            let app_id = PROPVARIANT::from(app_id);
+            store
+                .SetValue(&PKEY_AppUserModel_ID, &app_id)
+                .context("setting shortcut AppUserModelID")?;
+            store.Commit().context("committing shortcut properties")?;
+
+            let persist: IPersistFile = link.cast().context("opening shortcut persistence")?;
+            persist
+                .Save(&shortcut, BOOL::from(true))
+                .context("saving Start menu shortcut")?;
+        }
+        Ok(())
+    })();
+    if apartment_initialized {
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_alert, AlertState};
+    use crate::native_devices::PowerState;
+
+    #[test]
+    fn zero_disables_and_rearms_an_episode() {
+        let mut state = AlertState::default();
+        assert!(!should_alert(
+            &mut state,
+            Some(5),
+            PowerState::Discharging,
+            0
+        ));
+        assert!(should_alert(
+            &mut state,
+            Some(5),
+            PowerState::Discharging,
+            10
+        ));
+        assert!(!should_alert(
+            &mut state,
+            Some(5),
+            PowerState::Discharging,
+            10
+        ));
+        assert!(!should_alert(
+            &mut state,
+            Some(5),
+            PowerState::Discharging,
+            0
+        ));
+        assert!(should_alert(
+            &mut state,
+            Some(5),
+            PowerState::Discharging,
+            10
+        ));
+    }
+
+    #[test]
+    fn exact_threshold_alerts_only_once() {
+        let mut state = AlertState::default();
+        assert!(should_alert(
+            &mut state,
+            Some(10),
+            PowerState::Discharging,
+            10
+        ));
+        assert!(!should_alert(
+            &mut state,
+            Some(10),
+            PowerState::Discharging,
+            10
+        ));
+    }
+
+    #[test]
+    fn recovery_and_charging_rearm() {
+        let mut state = AlertState::default();
+        assert!(should_alert(
+            &mut state,
+            Some(8),
+            PowerState::Discharging,
+            10
+        ));
+        assert!(!should_alert(
+            &mut state,
+            Some(11),
+            PowerState::Discharging,
+            10
+        ));
+        assert!(should_alert(
+            &mut state,
+            Some(8),
+            PowerState::Discharging,
+            10
+        ));
+        assert!(!should_alert(&mut state, Some(8), PowerState::Charging, 10));
+        assert!(should_alert(
+            &mut state,
+            Some(8),
+            PowerState::Discharging,
+            10
+        ));
+    }
+
+    #[test]
+    fn devices_keep_independent_alert_history() {
+        let mut headset = AlertState::default();
+        let mut mouse = AlertState::default();
+        assert!(should_alert(
+            &mut headset,
+            Some(5),
+            PowerState::Discharging,
+            10
+        ));
+        assert!(should_alert(
+            &mut mouse,
+            Some(5),
+            PowerState::Discharging,
+            10
+        ));
+    }
 }
