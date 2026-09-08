@@ -92,7 +92,7 @@ impl AppState {
         })
     }
 
-    fn new_device_tray(kind: DeviceKind, label: &str) -> anyhow::Result<DeviceTray> {
+    fn new_device_tray(kind: DeviceKind, _label: &str) -> anyhow::Result<DeviceTray> {
         let icon = tray_icons::generate_device_icon(
             kind,
             crate::system_theme(),
@@ -104,7 +104,6 @@ impl AppState {
         menu.append(&quit)?;
         let tray = TrayIconBuilder::new()
             .with_icon(icon)
-            .with_tooltip(format!("{label}: disconnected"))
             .with_menu_on_left_click(false)
             .with_menu(Box::new(menu))
             .with_menu_on_right_click(true)
@@ -156,9 +155,6 @@ impl AppState {
         if tray.last_text != state_text {
             info!("Applied {:?} reading: {}", tray.kind, state_text);
             tray.last_text.clone_from(&state_text);
-        }
-        if let Err(err) = tray.tray.set_tooltip(Some(&state_text)) {
-            error!("setting tooltip: {err:?}");
         }
         match Self::load_icon(kind, percent, power) {
             Ok(icon) => {
