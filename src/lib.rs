@@ -48,8 +48,8 @@ pub fn run() -> anyhow::Result<()> {
             if readings_tx.send(readings).is_err() {
                 break;
             }
-            // Popup refresh actions interrupt the 10-minute cadence, including while devices are unavailable.
-            let interval = 10 * 60;
+            // Refresh interrupts the 10-minute cadence; retry missing mouse readings sooner.
+            let interval = if mouse_available { 10 * 60 } else { 2 };
             if matches!(
                 refresh_rx.recv_timeout(Duration::from_secs(interval)),
                 Err(mpsc::RecvTimeoutError::Disconnected)
