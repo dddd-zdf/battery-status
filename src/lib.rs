@@ -48,8 +48,8 @@ pub fn run() -> anyhow::Result<()> {
             if readings_tx.send(readings).is_err() {
                 break;
             }
-            // Popup refresh actions interrupt the ordinary 30-second cadence.
-            let interval = if mouse_available { 30 } else { 2 };
+            // Popup refresh actions interrupt the 10-minute cadence, including while devices are unavailable.
+            let interval = 10 * 60;
             if matches!(
                 refresh_rx.recv_timeout(Duration::from_secs(interval)),
                 Err(mpsc::RecvTimeoutError::Disconnected)
