@@ -39,7 +39,7 @@ git submodule update --init --recursive
 ./build.ps1 -Test
 ```
 
-The script uses the workspace-local Rust installation in `.tools` when present, otherwise the system Cargo. It generates a release app and diagnostics executable in `dist`. No automatic startup entry is created.
+The script uses the workspace-local Rust installation in `.tools` when present, otherwise the system Cargo. It generates a release app and diagnostics executable in `dist`. Use Start with Windows in the right-click menu to enable or disable startup at sign-in. It is off by default.
 
 ## Sources and licensing
 

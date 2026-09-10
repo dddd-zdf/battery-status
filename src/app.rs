@@ -20,7 +20,7 @@ use crate::{
     tray_icons,
 };
 
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem};
 
 enum AppEvent {
     Tray(TrayIconEvent),
@@ -32,6 +32,7 @@ struct DeviceTray {
     tray: TrayIcon,
     last_text: String,
     quit: MenuItem,
+    startup: CheckMenuItem,
 }
 
 pub struct AppState {
@@ -100,6 +101,8 @@ impl AppState {
             PowerState::Offline,
         )?;
         let menu = Menu::new();
+        let startup = CheckMenuItem::new("Start with Windows", true, Settings::startup_enabled(), None);
+        menu.append(&startup)?;
         let quit = MenuItem::new("Quit", true, None);
         menu.append(&quit)?;
         let tray = TrayIconBuilder::new()
@@ -114,6 +117,7 @@ impl AppState {
             tray,
             last_text: String::new(),
             quit,
+            startup,
         })
     }
 
@@ -230,6 +234,21 @@ impl ApplicationHandler<AppEvent> for AppState {
     }
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
+            AppEvent::Menu(event)
+                if event.id == self.headset.startup.id() || event.id == self.mouse.startup.id() =>
+            {
+                let enabled = if event.id == self.headset.startup.id() {
+                    self.headset.startup.is_checked()
+                } else {
+                    self.mouse.startup.is_checked()
+                };
+                if let Err(error) = Settings::set_startup(enabled) {
+                    error!("Could not change Windows startup: {error:?}");
+                }
+                let enabled = Settings::startup_enabled();
+                self.headset.startup.set_checked(enabled);
+                self.mouse.startup.set_checked(enabled);
+            }
             AppEvent::Menu(event)
                 if event.id == self.headset.quit.id() || event.id == self.mouse.quit.id() =>
             {

@@ -10,6 +10,32 @@ pub struct Settings {
 
 impl Settings {
     const KEY: &'static str = "Software\\BatteryStatus";
+    const RUN_KEY: &'static str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+    pub fn startup_enabled() -> bool {
+        winreg::RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey(Self::RUN_KEY)
+            .and_then(|key| key.get_value::<String, _>("BatteryStatus"))
+            .is_ok_and(|value| !value.is_empty())
+    }
+
+    pub fn set_startup(enabled: bool) -> Result<()> {
+        let (key, _) = winreg::RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(Self::RUN_KEY)
+            .context("opening Windows startup settings")?;
+        if enabled {
+            let executable = std::env::current_exe().context("locating executable")?;
+            key.set_value("BatteryStatus", &format!("\"{}\"", executable.display()))
+                .context("enabling startup")?;
+        } else {
+            match key.delete_value("BatteryStatus") {
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(error).context("disabling startup"),
+            }
+        }
+        Ok(())
+    }
 
     pub fn load() -> Result<Self> {
         let hkcu = winreg::RegKey::predef(HKEY_CURRENT_USER);
