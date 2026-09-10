@@ -1,12 +1,12 @@
 # Battery Status
 
-A small Windows tray indicator for HyperX Cloud III S Wireless and Logitech PRO X SUPERLIGHT 2 DEX. Adapted from aarol's Headset Battery Indicator, with device-specific tray icons and a compact battery panel.
+A small Windows tray indicator for HyperX Cloud III S Wireless and Logitech PRO X SUPERLIGHT 2 DEX. Adapted from [aarol/headset-battery-indicator](https://github.com/aarol/headset-battery-indicator), with device-specific tray icons and a compact battery panel.
 
 ## Run
 
 Open `dist/BatteryStatus.exe`. It runs in the notification area without a main window. Windows may initially put the icons in the tray overflow menu.
 
-There is one icon for the headset and one for the mouse. Left-click either icon to open the compact battery panel. Set the alert threshold with the minus/plus buttons, which adjust it by 10 percentage points per click, or click the value and type an exact percentage from 0 to 100. 0% turns alerts off; a device alerts once when its battery is at or below the threshold. Preferences are saved automatically. Refresh is in the bottom-right corner. Right-click either tray icon and select Quit to exit. Logs are stored in battery-status.log beside the executable. Readings refresh in the background every 10 minutes, with a 2-second retry interval when the mouse reading is unavailable. Disconnected or unknown readings are not shown as a measured zero.
+There is one icon for the headset and one for the mouse. Left-click either icon to open the compact battery panel. Set the alert threshold with the minus/plus buttons, which adjust it by 10 percentage points per click, or click the value and type an exact percentage from 0 to 100. 0% turns alerts off; a device alerts once when its battery is at or below the threshold. Preferences are saved automatically. Refresh is in the bottom-right corner. Right-click either tray icon to toggle **Start with Windows** or select **Quit** to exit. Logs are stored in battery-status.log beside the executable. Readings refresh in the background every 10 minutes, with a 2-second retry interval when the mouse reading is unavailable. Disconnected or unknown readings are not shown as a measured zero.
 
 `dist/BatteryDiagnostics.exe` prints native HID detection and readings in a console. It uses the same device module as the UI. Run it from PowerShell to keep the output visible:
 
@@ -41,8 +41,20 @@ git submodule update --init --recursive
 
 The script uses the workspace-local Rust installation in `.tools` when present, otherwise the system Cargo. It generates a release app and diagnostics executable in `dist`. Use Start with Windows in the right-click menu to enable or disable startup at sign-in. It is off by default.
 
+## Credits
+
+This project builds on the work of the following authors and communities:
+
+- **[aarol/headset-battery-indicator](https://github.com/aarol/headset-battery-indicator)** by Aaro Luomanen — the original application foundation and UI inspiration. Battery Status retains the original Git history and adapts its Windows tray infrastructure.
+- **[auto94/HyperX-Cloud-2-Battery-Monitor](https://github.com/auto94/HyperX-Cloud-2-Battery-Monitor)** — the reference for HyperX headset battery communication, including the Cloud III S Wireless protocol used here.
+- **[andyvorld/LGSTrayBattery](https://github.com/andyvorld/LGSTrayBattery)** — the reference for Logitech native HID/HID++ device discovery and battery queries, used to develop support for the PRO X 2 DEX.
+
+Thank you to these projects for making their source code and protocol implementations available. This is an independent adaptation, not an official HyperX or Logitech application.
+
+See [Third-party notices](THIRD-PARTY-NOTICES.md) for the reference revisions and license notices. The original project's documentation is preserved in [Upstream README](docs/UPSTREAM-README.md).
+
 ## Sources and licensing
 
 Live verification on this PC confirmed that HyperX `03F0:06BE` and Logitech LIGHTSPEED `046D:C54D` are discovered through their native HID protocols. The mouse sends 20-byte HID++ replies on the long HID collection even for 7-byte requests on the short collection; both channels are handled. Battery values are point-in-time readings and can change as the devices are used.
 
-See `THIRD-PARTY-NOTICES.md` for the three upstream projects and pinned revisions. The original upstream README is preserved in `docs/UPSTREAM-README.md`. This modified application is GPL v3; preserve the license and provide corresponding source when redistributing it.
+This modified application is licensed under [GPL-3.0-only](LICENSE). Preserve the license and provide corresponding source when redistributing it.
